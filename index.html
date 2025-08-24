@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>10 Charts Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+body {
+display: flex;
+flex-wrap: wrap;
+gap: 20px;
+background-color: #f5f5f5;
+padding: 20px;
+justify-content: center;
+}
+.chart-container {
+width: 48%;
+height: 450px;
+border: 1px solid #ccc;
+background-color: white;
+position: relative;
+}
+@media screen and (max-width: 768px) {
+.chart-container {
+width: 100%;
+}
+}
+.controls {
+position: absolute;
+top: 5px;
+left: 5px;
+z-index: 10;
+background-color: rgba(255,255,255,0.85);
+padding: 5px;
+border-radius: 5px;
+}
+.controls label { display: block; font-size: 12px; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+<div id="charts"></div>
+
+<script>
+const symbols = ['AAPL','MSFT','GOOGL','AMZN','TSLA','NFLX','NVDA','FB','INTC','SPUS'];
+const chartsContainer = document.getElementById('charts');
+
+symbols.forEach(symbol => {
+const container = document.createElement('div');
+container.className = 'chart-container';
+
+const controls = document.createElement('div');
+controls.className = 'controls';
+controls.innerHTML = `
+<label><input type="checkbox" value="macd"> MACD</label>
+<label><input type="checkbox" value="rsi"> RSI</label>
+<label><input type="checkbox" value="ema21"> EMA21</label>
+<label><input type="checkbox" value="ema9_crossover"> EMA9 Crossover</label>
+<label><input type="checkbox" value="ma20_volume"> MA20 Volume</label>
+<label><input type="checkbox" value="vwap"> VWAP</label>
+<label><input type="checkbox" value="bb"> Bollinger Bands</label>
+`;
+container.appendChild(controls);
+chartsContainer.appendChild(container);
+
+const chart = LightweightCharts.createChart(container, { width: container.clientWidth, height: 450 });
+const candleSeries = chart.addCandlestickSeries();
+const volumeSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' } });
+
+fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1mo`)
+.then(res => res.json())
+.then(data => {
+const quotes = data.chart.result[0].indicators.quote[0];
+const timestamps = data.chart.result[0].timestamp;
+
+const candlesticks = timestamps.map((t,i)=>({
+time:t,
+open:quotes.open[i],
+high:quotes.high[i],
+low:quotes.low[i],
+close:quotes.close[i],
+}));
+candleSeries.setData(candlesticks);
+
+const volumes = timestamps.map((t,i)=>({ time:t, value:quotes.volume[i] }));
+volumeSeries.setData(volumes);
+
+function calculateMA(data, period, key='close'){
+let ma = [];
+for(let i=0;i<data.length;i++){
+if(i<period-1){ ma.push({time:data[i].time,value:null}); continue; }
+const sum = data.slice(i-period+1,i+1).reduce((a,b)=>a+b[key],0);
+ma.push({time:data[i].time,value:sum/period});
+}
+return ma;
+}
+function calculateEMA(data, period){
+let ema = [];
+let k = 2/(period+1);
+data.forEach((d,i)=>{
+if(i===0) ema.push({time:d.time,value:d.close});
+else ema.push({time:d.time,value:d.close*k + ema[i-1].value*(1-k)});
+});
+return ema;
+}
+function calculateVWAP(data){
+let vwap = [], cumPV=0, cumVol=0;
+for(let i=0;i<data.length;i++){
+const typical = (data[i].high + data[i].low + data[i].close)/3;
+cumPV += typical*quotes.volume[i];
+cumVol += quotes.volume[i];
+vwap.push({time:data[i].time,value:cumPV/cumVol});
+}
+return vwap;
+}
+function calculateRSI(data, period=14){
+let rsi = [], gains=0, losses=0;
+for(let i=1;i<data.length;i++){
+const change = data[i].close - data[i-1].close;
+gains += Math.max(change,0);
+losses += Math.max(-change,0);
+if(i<period){ rsi.push({time:data[i].time,value:null}); continue; }
+if(i===period){ rsi.push({time:data[i].time,value:100-(100/(1+(gains/period)/(losses/period)))}); continue; }
+const avgGain = ((gains-period)/period + Math.max(change,0)/period);
+const avgLoss = ((losses-period)/period + Math.max(-change,0)/period);
+rsi.push({time:data[i].time,value:100-(100/(1+(avgGain/avgLoss)))});
+}
+return rsi;
+}
+function calculateBollinger(data, period=20){
+let bb = [];
+for(let i=0;i<data.length;i++){
+if(i<period-1){ bb.push({time:data[i].time, upper:null, lower:null}); continue; }
+const slice = data.slice(i-period+1,i+1);
+const mean = slice.reduce((a,b)=>a+b.close,0)/period;
+const std = Math.sqrt(slice.reduce((a,b)=>a+Math.pow(b.close-mean,2),0)/period);
+bb.push({time:data[i].time, upper:mean+2*std, lower:mean-2*std});
+}
+return bb;
+}
+
+const ma20Volume = chart.addLineSeries({ color:'green', lineWidth:2 });
+ma20Volume.setData(calculateMA(volumes,20,'value')); ma20Volume.applyOptions({ visible:false });
+
+const vwapPrice = chart.addLineSeries({ color:'orange', lineWidth:2 });
+vwapPrice.setData(calculateVWAP(candlesticks)); vwapPrice.applyOptions({ visible:false });
+
+const ema21Price = chart.addLineSeries({ color:'purple', lineWidth:2 });
+ema21Price.setData(calculateEMA(candlesticks,21)); ema21Price.applyOptions({ visible:false });
+
+const ema9Price = chart.addLineSeries({ color:'blue', lineWidth:2 });
+ema9Price.setData(calculateEMA(candlesticks,9)); ema9Price.applyOptions({ visible:false });
+
+const rsiSeries = chart.addLineSeries({ color:'red', lineWidth:2, priceScaleId:'right' });
+rsiSeries.setData(calculateRSI(candlesticks)); rsiSeries.applyOptions({ visible:false });
+
+const bbUpper = chart.addLineSeries({ color:'brown', lineWidth:1 });
+const bbLower = chart.addLineSeries({ color:'brown', lineWidth:1 });
+const bbData = calculateBollinger(candlesticks);
+bbUpper.setData(bbData.map(d=>({time:d.time,value:d.upper})));
+bbLower.setData(bbData.map(d=>({time:d.time,value:d.lower})));
+bbUpper.applyOptions({ visible:false }); bbLower.applyOptions({ visible:false });
+
+const macdFast=12, macdSlow=26;
+let macdSeries = chart.addLineSeries({ color:'darkblue', lineWidth:2, priceScaleId:'right' });
+let macdData = [];
+let emaFast = calculateEMA(candlesticks,macdFast);
+let emaSlow = calculateEMA(candlesticks,macdSlow);
+for(let i=0;i<candlesticks.length;i++){
+if(emaFast[i].value!==null && emaSlow[i].value!==null){
+macdData.push({time:candlesticks[i].time,value:emaFast[i].value-emaSlow[i].value});
+} else macdData.push({time:candlesticks[i].time,value:null});
+}
+macdSeries.setData(macdData); macdSeries.applyOptions({ visible:false });
+
+// Multiple indicator toggle
+const checkboxes = controls.querySelectorAll('input[type="checkbox"]');
+checkboxes.forEach(box=>{
+box.addEventListener('change', ()=>{
+ma20Volume.applyOptions({ visible: checkboxes[0].checked });
+macdSeries.applyOptions({ visible: checkboxes[0].checked });
+rsiSeries.applyOptions({ visible: checkboxes[1].checked });
+ema21Price.applyOptions({ visible: checkboxes[2].checked });
+ema9Price.applyOptions({ visible: checkboxes[3].checked });
+ma20Volume.applyOptions({ visible: checkboxes[4].checked });
+vwapPrice.applyOptions({ visible: checkboxes[5].checked });
+bbUpper.applyOptions({ visible: checkboxes[6].checked });
